@@ -10,6 +10,7 @@ import re
 import pandas as pd
 from timestamps import split_timestamps, convert_timestamp
 import csv
+from movie_maker import clip_video, clip_video_python
 
 PATTERN = re.compile(r'\d{1,3}(?::\d{1,3}){1,2}(?:\s*-\s*\d{1,3}(?::\d{1,3}){1,2})?')
 
@@ -39,6 +40,7 @@ class YoutubeVideo():
 		self.video_path = self.download_video(yt)
 		self.audio_path = self.download_audio(yt)
 		self.wav_path = self.extract_wav()
+		self.dbs = self.get_dbs(optional_delta_t=1)
 		self.length = yt.length
 		self.views = yt.views
 
@@ -80,21 +82,24 @@ class YoutubeVideo():
 	def extract_wav(self):
 		if not os.path.exists(os.path.join('wavs',self.title+'.wav')):
 			command = 'ffmpeg -hide_banner -loglevel error -i "./{}" -ab 160k -ac 2 -ar 44100 -vn "./wavs/{}.wav"'.format(self.audio_path, self.title)
-			print(command)
 			subprocess.call(command, shell=True)
 			print('Created WAV file.')
 		else:
 			print('WAV File already exists.')
 		return os.path.join('wavs',self.title+'.wav')
 
-	def get_dbs(self):
+	def get_dbs(self, optional_delta_t=None):
 		samplerate, data = wavfile.read(self.wav_path)
 		self.length = data.shape[0] / samplerate
-		chunk_size = samplerate*self.delta_t
+		if optional_delta_t:
+			chunk_size = samplerate * optional_delta_t
+		else:
+			chunk_size = samplerate*self.delta_t
 		self.num_chunks = data.shape[0] // chunk_size
 
 		data_chunks = np.array_split(data, self.num_chunks)
-		dbs = [20*np.log10(np.sqrt(np.mean(chunk**2))) for chunk in data_chunks]
+		means = [np.mean(chunk**2) for chunk in data_chunks]
+		dbs = [20*np.log10(np.sqrt(mean)) if mean > 0 else 0 for mean in means]
 		return dbs
 
 	def set_delta_t(self,delta_t):
@@ -118,17 +123,78 @@ class YoutubeVideo():
 		timestamps = self.get_timestamps()
 		return [t for t in timestamps if type(t)!=list], [t for t in timestamps if type(t)==list]
 
-	def plot(self, offset=0):
-		dbs = self.get_dbs()
+	def remove_long_timeintervals(self, ts, max_len):
+		ts_new = []
+		for t in ts:
+			if t[1] - t[0] <= max_len:
+				ts_new.append(t)
+		return ts_new
+
+	def plot(self, offset=0, quantile=None):
+		dbs = self.get_dbs(optional_delta_t=1)
 		time = np.linspace(offset,self.length+offset,self.num_chunks)
 		max_dbs = np.amax(dbs) # min-max normalization
 		min_dbs = np.amin(dbs)
-		dbs = (dbs - min_dbs) / (max_dbs - min_dbs)
-		plt.plot(time,dbs*20,c='w',linewidth=.5,alpha=.5)
+		dbs = (dbs - min_dbs)*20 / (max_dbs - min_dbs)
+		plt.plot(time,dbs,c='w',linewidth=.5,alpha=.5)
+		plt.hlines(np.mean(dbs),0,len(dbs))
 		timestamps, timeintervals = self.timestamps_timeintervals()
+		hist = np.histogram([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t))
+		hist, bins = hist[0], hist[1]
+		#print('Hist:',hist)
+		#print('Bins:',bins)
+		#if quantile:
+			#val = np.quantile(hist, quantile)
+			#print(bins[:-1][hist>=val])
 		plt.hist([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t),color=self.plot_color)
 		for i,interval in enumerate(timeintervals):
 			plt.plot([(val+offset) for val in interval],[i+1]*len(interval),marker='o',c=self.plot_color,markersize=2,markeredgecolor='k',alpha=.8)
+
+	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
+								algorithmic_gen_quantile=.9,
+								walkback=10,walkforward=5, val=None):
+		mean_dbs = np.mean(dbs)
+		std_dbs = np.std(dbs)
+		timestamps, timeintervals = self.timestamps_timeintervals()
+		timeintervals = self.remove_long_timeintervals(timeintervals,max_len)
+		hist = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
+		hist, bins = hist[0], hist[1]
+		print('Histogram:', hist)
+		print('Convolution:', np.convolve(hist,np.ones(3,dtype=int),'valid'))
+
+		if not val:
+			val = np.quantile(hist, user_gen_quantile)
+
+		good_bins = bins[:-1][hist>=val]
+		user_gen = []
+		for good_bin in good_bins:
+			#print('{} is a good bin above the {:.2%} percentile'.format(good_bin,user_gen_quantile))
+			ti_start_in_bin = self.fitting_timeintervals(timeintervals,start_range=(good_bin,good_bin+9.999))
+			
+			if len(ti_start_in_bin)>0:
+				user_gen.append([np.amin(ti_start_in_bin),np.amax(ti_start_in_bin)])
+		#print(good_bins)
+		val = np.quantile(hist, algorithmic_gen_quantile)
+		good_bins = bins[:-1][hist>=val]
+		algo_gen = []
+		for good_bin in good_bins:
+			pass
+		return user_gen
+
+
+	def fitting_timeintervals(self,ti,start_range=None,end_range=None):
+		if start_range is not None and end_range is not None:
+			return [t for t in ti 
+					if t[0]>=start_range[0] and t[0]<=start_range[1]
+					and t[1]>=end_range[0] and t[1]<=end_range[1]]
+		elif start_range is not None:
+			return [t for t in ti 
+					if t[0]>=start_range[0] and t[0]<=start_range[1]]
+		elif start_range is None and end_range is None:
+			return None
+		else:
+			return [t for t in ti 
+					if t[1]>=end_range[0] and t[1]<=end_range[1]]
 
 	def download_comments(self, max_pages=100):
 		filename = os.path.join('comments',self.title+'.csv')
@@ -181,9 +247,12 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	
 	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP')
-	yt.set_plot_color([66/255.,135/255.,245/255.])
-	yt.plot()
-	plt.gca().set_facecolor((.3,.3,.3))
-	plt.show()
+	gti = yt.find_good_timeintervals(120)
+	#print('Good Time Intervals:', gti)
+	#yt.set_plot_color([66/255.,135/255.,245/255.])
+	#yt.plot(quantile=.9)
+	#plt.gca().set_facecolor((.3,.3,.3))
+	#plt.show()
+
+	clip_video(yt.video_path,yt.audio_path,gti,'output.mp4')

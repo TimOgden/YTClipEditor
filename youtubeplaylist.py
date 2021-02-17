@@ -3,6 +3,7 @@ from youtubeclip import YoutubeVideo
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn_fitting import fit_transform
+import numpy as np
 
 class YoutubePlaylist():
 	def __init__(self, url):
@@ -12,11 +13,11 @@ class YoutubePlaylist():
 		for url in tqdm(self.video_urls):
 			self.videos.append(YoutubeVideo(url=url))
 
-	def plot_videos(self, colors):
+	def plot_videos(self, colors, quantile=None):
 		offset = 0
 		for i,video in enumerate(self.videos):
 			video.set_plot_color(colors[i%len(colors)])
-			video.plot(offset=offset)
+			video.plot(offset=offset, quantile=quantile)
 			offset += video.length
 		plt.gca().set_facecolor((.3,.3,.3))
 		plt.show()
@@ -28,8 +29,10 @@ class YoutubePlaylist():
 		plt.ylabel('Total View Count')
 		plt.show()
 
-	def above_quantile(self, quantile):
-		return None
+	def quantile(self, decimal):
+		ts, _ = np.concat((video.timestamps_timeintervals() for video in self.videos),axis=0)
+		quantile = np.quantile(ts, decimal)
+		return quantile
 
 if __name__ == '__main__':
 	url = 'https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP'
