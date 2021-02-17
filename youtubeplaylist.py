@@ -2,6 +2,8 @@ from pytube import Playlist
 from youtubeclip import YoutubeVideo
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from sklearn_fitting import fit_transform
+
 class YoutubePlaylist():
 	def __init__(self, url):
 		self.url = url
@@ -9,8 +11,28 @@ class YoutubePlaylist():
 		self.videos = []
 		for url in tqdm(self.video_urls):
 			self.videos.append(YoutubeVideo(url=url))
+
+	def plot_videos(self, colors):
+		offset = 0
+		for i,video in enumerate(self.videos):
+			video.set_plot_color(colors[i%len(colors)])
+			video.plot(offset=offset)
+			offset += video.length
+		plt.gca().set_facecolor((.3,.3,.3))
+		plt.show()
+
+	def plot_views(self):
+		views = [video.views for video in self.videos]
+		plt.plot(views)
+		plt.xlabel('Video Index in List')
+		plt.ylabel('Total View Count')
+		plt.show()
+
+	def above_quantile(self, quantile):
+		return None
+
 if __name__ == '__main__':
-	url = 'https://www.youtube.com/watch?v=muBkYQg-hSg&list=PL3tRBEVW0hiAl6bH2ywV_IabJvVqBM-vG'
+	url = 'https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP'
 	playlist = YoutubePlaylist(url)
 	colors = [[66/255.,135/255.,245/255.],
 			  [66/255.,215/255.,245/255.],
@@ -18,10 +40,5 @@ if __name__ == '__main__':
 			  [117/255.,245/255.,66/255.],
 			  [245/255.,188/255.,66/255.],
 			  [245/255.,84/255.,66/255.]]
-	offset = 0
-	for color,video in zip(colors,playlist.videos):
-		video.set_plot_color(color)
-		video.plot(offset=offset)
-		offset += video.length
-	plt.gca().set_facecolor((.3,.3,.3))
-	plt.show()
+	playlist.plot_videos(colors)
+	#playlist.plot_views()

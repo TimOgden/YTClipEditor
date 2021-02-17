@@ -9,6 +9,7 @@ import googleapiclient.discovery
 import re
 import pandas as pd
 from timestamps import split_timestamps, convert_timestamp
+import csv
 
 PATTERN = re.compile(r'\d{1,3}(?::\d{1,3}){1,2}(?:\s*-\s*\d{1,3}(?::\d{1,3}){1,2})?')
 
@@ -23,22 +24,24 @@ class YoutubeVideo():
 			self.id_ = kwargs['id']
 		else:
 			raise ValueError('Please provide a url or id to your video.')
-
 		if 'plot_color' in kwargs:
 			self.plot_color = kwargs['plot_color']
 		else:
 			self.plot_color = [66/255.,78/255.,245/255.]
-
-		self.delta_t = 10
-		self.comments = None
-		self.timestamps = None
-		self.timeintervals = None
-		self.dbs = None
-		self.length = 0
-
-		self.video_path = self.download_video()
-		self.audio_path = self.download_audio()
+		if 'delta_t' in kwargs:
+			self.delta_t = kwargs['delta_t']
+		else:
+			self.delta_t = 10
+		print('Getting data now')
+		yt = YouTube(self.url)
+		self.title = self.clean_title(yt.title)
+		self.comments_path = self.download_comments()
+		self.video_path = self.download_video(yt)
+		self.audio_path = self.download_audio(yt)
 		self.wav_path = self.extract_wav()
+		self.length = yt.length
+		self.views = yt.views
+
 		
 
 	def set_plot_color(self, color):
@@ -48,10 +51,9 @@ class YoutubeVideo():
 		.replace(':','').replace('"','').replace('/','') \
 		.replace('\\','').replace('|','').replace('?','') \
 		.replace('*','').replace('.','').replace(',','') \
-		.replace('~','')
+		.replace('~','').replace('\'','')
 	
-	def download_video(self):
-		yt = YouTube(self.url)
+	def download_video(self, yt):
 		self.length = yt.length
 		self.views = yt.views
 		video = yt.streams.filter(progressive=False,file_extension='mp4').order_by('resolution').desc().first()
@@ -64,8 +66,7 @@ class YoutubeVideo():
 			print('Video of {} already downloaded.'.format(self.title))
 		return self.vid_filepath
 
-	def download_audio(self):
-		yt = YouTube(self.url)
+	def download_audio(self, yt):
 		audio = yt.streams.filter(only_audio=True).first()
 		self.title = self.clean_title(yt.title)
 		self.aud_filepath = os.path.join('YTAudio',self.title+'.mp4')
@@ -77,8 +78,6 @@ class YoutubeVideo():
 		return self.aud_filepath
 
 	def extract_wav(self):
-		if not os.path.exists(self.audio_path):
-			self.audio_path = self.download_audio()
 		if not os.path.exists(os.path.join('wavs',self.title+'.wav')):
 			command = 'ffmpeg -hide_banner -loglevel error -i "./{}" -ab 160k -ac 2 -ar 44100 -vn "./wavs/{}.wav"'.format(self.audio_path, self.title)
 			print(command)
@@ -89,9 +88,6 @@ class YoutubeVideo():
 		return os.path.join('wavs',self.title+'.wav')
 
 	def get_dbs(self):
-		print('TITLE:',self.title)
-		if not os.path.exists(os.path.join('wavs',self.title+'.wav')):
-			self.extract_wav()
 		samplerate, data = wavfile.read(self.wav_path)
 		self.length = data.shape[0] / samplerate
 		chunk_size = samplerate*self.delta_t
@@ -105,41 +101,40 @@ class YoutubeVideo():
 		self.delta_t = delta_t
 
 	def get_timestamps(self):
-		if not self.comments:
-			self.comments = self.get_comments()
 		timestamps = []
-		for comment in self.comments.values:
-			try:
-				[timestamps.append(ts) for ts in split_timestamps(re.findall(PATTERN, comment))]
-			except Exception as e:
-				pass
+		with open(self.comments_path,'r', encoding='utf-8') as f:
+			reader = csv.reader(f)
+			#print('Num of comments:',sum(1 for row in reader))
+			for row in reader:
+				try:
+					comment = ''.join(row)
+					[timestamps.append(ts) for ts in split_timestamps(re.findall(PATTERN, comment))]
+				except Exception as e:
+					pass
+		#print(len(timestamps))
 		return timestamps
 
 	def timestamps_timeintervals(self):
-		if not self.timestamps:
-			self.timestamps = self.get_timestamps()
-		return [t for t in self.timestamps if type(t)!=list], [t for t in self.timestamps if type(t)==list]
+		timestamps = self.get_timestamps()
+		return [t for t in timestamps if type(t)!=list], [t for t in timestamps if type(t)==list]
 
-	def plot(self,offset=0, normalized=False):
-		if not self.dbs:
-			self.dbs = self.get_dbs()
+	def plot(self, offset=0):
+		dbs = self.get_dbs()
 		time = np.linspace(offset,self.length+offset,self.num_chunks)
-		max_dbs = np.amax(self.dbs) # min-max normalization
-		min_dbs = np.amin(self.dbs)
-		dbs = (self.dbs - min_dbs) / (max_dbs - min_dbs)
+		max_dbs = np.amax(dbs) # min-max normalization
+		min_dbs = np.amin(dbs)
+		dbs = (dbs - min_dbs) / (max_dbs - min_dbs)
 		plt.plot(time,dbs*20,c='w',linewidth=.5,alpha=.5)
-		if not self.timeintervals:
-			self.timestamps, self.timeintervals = self.timestamps_timeintervals()
-		plt.hist([(t+offset) for t in self.timestamps],bins=np.arange(offset,self.length+offset,self.delta_t),color=self.plot_color)
-		for i,interval in enumerate(self.timeintervals):
-			plt.plot([(val+offset) for val in interval],[i]*len(interval),marker='o',c=self.plot_color,markersize=2,markeredgecolor='k',alpha=.8)
+		timestamps, timeintervals = self.timestamps_timeintervals()
+		plt.hist([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t),color=self.plot_color)
+		for i,interval in enumerate(timeintervals):
+			plt.plot([(val+offset) for val in interval],[i+1]*len(interval),marker='o',c=self.plot_color,markersize=2,markeredgecolor='k',alpha=.8)
 
-	def get_comments(self, max_pages=100):
+	def download_comments(self, max_pages=100):
 		filename = os.path.join('comments',self.title+'.csv')
 		if os.path.exists(filename):
-			print('Loading comments from file')
-			df = pd.read_csv(filename)['0']
-			return df
+			print('Comments already downloaded.')
+			return filename
 		print('Grabbing comments now...')
 		# Disable OAuthlib's HTTPS verification when running locally.
 		# *DO NOT* leave this option enabled in production.
@@ -171,23 +166,24 @@ class YoutubeVideo():
 			)
 			response = request.execute()
 			for c in response['items']:
-				comments.append(c['snippet']['topLevelComment']['snippet']['textOriginal'])
+				comments.append(''.join(c['snippet']['topLevelComment']['snippet']['textOriginal']))
 			try:
 				nextToken = response['nextPageToken']
 			except:
 				break
 			print(f'Page {i}/{max_pages}', end='\r')
 			i+=1
-		comments = pd.Series(comments)
-		comments.dropna(axis=0,inplace=True)
-		comments.to_csv(filename)
-		return comments
+		with open(filename,'w', encoding='utf-8') as f:
+			writer = csv.writer(f)
+			for comment in comments:
+				#print(comment)
+				writer.writerow(comment)
+		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=qJ5sic6pYbo&list=PL3tRBEVW0hiAl6bH2ywV_IabJvVqBM-vG&index=2')
+	
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP')
 	yt.set_plot_color([66/255.,135/255.,245/255.])
-	yt.set_delta_t(10)
-	print(yt.views)
-	yt.plot(normalized=True)
+	yt.plot()
 	plt.gca().set_facecolor((.3,.3,.3))
 	plt.show()
