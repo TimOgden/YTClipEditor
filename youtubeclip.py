@@ -20,14 +20,13 @@ def argmin_min_within_length(data, start, length):
 		length = min(len(data)-1-start,length)
 	full_val = np.max(data)+1
 	window = np.full_like(data,full_val)
-	#print('Start:',start,'s+l:',start+length)
 	if length>0:
 		window[start:start+length+1] = data[start:start+length+1]
-		print(window)
 	else:
 		window[start+length:start+1] = data[start+length:start+1]
-		print(window)
-	
+	if length<0:
+		window = np.flip(window)
+		return len(window)-1-np.argmin(window), np.min(window)
 	return np.argmin(window), np.min(window)
 
 class YoutubeVideo():
@@ -49,6 +48,10 @@ class YoutubeVideo():
 			self.delta_t = kwargs['delta_t']
 		else:
 			self.delta_t = 10
+		if 'audio_delta_t' in kwargs:
+			self.audio_delta_t = kwargs['audio_delta_t']
+		else:
+			self.audio_delta_t = .5
 		print('Getting data now')
 		yt = YouTube(self.url)
 		self.title = self.clean_title(yt.title)
@@ -56,9 +59,10 @@ class YoutubeVideo():
 		self.video_path = self.download_video(yt)
 		self.audio_path = self.download_audio(yt)
 		self.wav_path = self.extract_wav()
-		self.dbs = self.get_dbs(optional_delta_t=1)
+		self.dbs = self.get_dbs()
 		self.length = yt.length
 		self.views = yt.views
+		self.gti = None
 
 		
 
@@ -69,7 +73,7 @@ class YoutubeVideo():
 		.replace(':','').replace('"','').replace('/','') \
 		.replace('\\','').replace('|','').replace('?','') \
 		.replace('*','').replace('.','').replace(',','') \
-		.replace('~','').replace('\'','')
+		.replace('~','').replace('\'','').replace('$','')
 	
 	def download_video(self, yt):
 		self.length = yt.length
@@ -104,13 +108,10 @@ class YoutubeVideo():
 			print('WAV File already exists.')
 		return os.path.join('wavs',self.title+'.wav')
 
-	def get_dbs(self, optional_delta_t=None):
+	def get_dbs(self):
 		samplerate, data = wavfile.read(self.wav_path)
 		self.length = data.shape[0] / samplerate
-		if optional_delta_t:
-			chunk_size = samplerate * optional_delta_t
-		else:
-			chunk_size = samplerate*self.delta_t
+		chunk_size = round(samplerate * self.audio_delta_t)
 		self.num_chunks = data.shape[0] // chunk_size
 
 		data_chunks = np.array_split(data, self.num_chunks)
@@ -120,6 +121,8 @@ class YoutubeVideo():
 
 	def set_delta_t(self,delta_t):
 		self.delta_t = delta_t
+	def set_audio_delta_t(self, audio_delta_t):
+		self.audio_delta_t = audio_delta_t
 
 	def get_timestamps(self):
 		timestamps = []
@@ -142,19 +145,20 @@ class YoutubeVideo():
 	def remove_long_timeintervals(self, ts, max_len):
 		ts_new = []
 		for t in ts:
-			if t[1] - t[0] <= max_len:
+			if t[1] - t[0] <= max_len and t[0]>=0 and t[1]<self.length:
 				ts_new.append(t)
 		return ts_new
 
 	def plot(self, offset=0, quantile=None):
-		dbs = self.get_dbs(optional_delta_t=1)
+		dbs = self.dbs
 		time = np.linspace(offset,self.length+offset,self.num_chunks)
 		max_dbs = np.amax(dbs) # min-max normalization
 		min_dbs = np.amin(dbs)
 		dbs = (dbs - min_dbs)*20 / (max_dbs - min_dbs)
 		plt.plot(time,dbs,c='w',linewidth=.5,alpha=.5)
-		plt.hlines(np.mean(dbs),0,len(dbs))
+		plt.hlines(np.mean(dbs),0,time[-1],color='k')
 		timestamps, timeintervals = self.timestamps_timeintervals()
+		timeintervals = self.remove_long_timeintervals(timeintervals,60)
 		hist = np.histogram([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t))
 		hist, bins = hist[0], hist[1]
 		#print('Hist:',hist)
@@ -164,17 +168,27 @@ class YoutubeVideo():
 			#print(bins[:-1][hist>=val])
 		plt.hist([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t),color=self.plot_color)
 		for i,interval in enumerate(timeintervals):
-			plt.plot([(val+offset) for val in interval],[i+1]*len(interval),marker='o',c=self.plot_color,markersize=2,markeredgecolor='k',alpha=.8)
+			plt.plot([(val+offset) for val in interval],[i+1]*len(interval),marker='o',c=self.plot_color,
+				markersize=2,markeredgecolor='k',alpha=.8,label='User time intervals')
+		if self.gti:
+			for i,interval in enumerate(self.gti):
+				plt.plot([(val+offset) for val in interval],[i+1.2]*len(interval),marker='o',c='r',
+					markersize=2,markeredgecolor='k',alpha=.8,label='Final time intervals')
+		handles, labels = plt.gca().get_legend_handles_labels()
+		by_label = dict(zip(labels, handles))
+		plt.legend(by_label.values(), by_label.keys(),loc='upper right')
+
 
 	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.9,
-								max_walkback=10, max_walkforward=5, val=None):
+								max_walkback=5, max_walkforward=3, val=None):
+		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
 		timeintervals = self.remove_long_timeintervals(timeintervals,max_len)
 		hist = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
 		hist, bins = hist[0], hist[1]
-		print('Histogram:', hist)
-		print('Convolution:', np.convolve(hist,np.ones(3,dtype=int),'valid'))
+		#print('Histogram:', hist)
+		#print('Convolution:', np.convolve(hist,np.ones(3,dtype=int),'valid'))
 
 		if not val:
 			val = np.quantile(hist, user_gen_quantile)
@@ -184,9 +198,17 @@ class YoutubeVideo():
 		for good_bin in good_bins:
 			#print('{} is a good bin above the {:.2%} percentile'.format(good_bin,user_gen_quantile))
 			ti_start_in_bin = self.fitting_timeintervals(timeintervals,start_range=(good_bin,good_bin+9.999))
-			
-			if len(ti_start_in_bin)>0:
-				user_gen.append([np.amin(ti_start_in_bin),np.amax(ti_start_in_bin)])
+			adjusted_tis = []
+			for ti in ti_start_in_bin:
+				original_start, original_end = ti[0], ti[1]
+				start, _ = argmin_min_within_length(dbs,original_start*4,round(-max_walkback*self.audio_delta_t**-1))
+				end, _ = argmin_min_within_length(dbs,original_end*4,round(max_walkforward*self.audio_delta_t**-1))
+				start/=4
+				end/=4
+				adjusted_tis.append([start,end])
+				print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
+			if len(adjusted_tis)>0:
+				user_gen.append([np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])])
 		#print(good_bins)
 		val = np.quantile(hist, algorithmic_gen_quantile)
 		good_bins = bins[:-1][hist>=val]
@@ -261,19 +283,12 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	data = [9, 4, 3, 5, 7, 1, 8, 4, 0, 2, 3, 5]
-	print('Data  :',data)
-	start = 1
-	length = len(data)
-	arg, val = argmin_min_within_length(data,start,length)
-	print(f'Min from {start} within {length} elements: data[{arg}] = {val}')
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=KC0DlJza3dk', audio_delta_t=.25)
+	yt.gti = yt.find_good_timeintervals(60, user_gen_quantile=.9)
+	print('Good Time Intervals:', yt.gti)
+	yt.set_plot_color([66/255.,135/255.,245/255.])
+	yt.plot(quantile=.9)
+	plt.gca().set_facecolor((.3,.3,.3))
+	plt.show()
 
-	#yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP')
-	#gti = yt.find_good_timeintervals(120)
-	#print('Good Time Intervals:', gti)
-	#yt.set_plot_color([66/255.,135/255.,245/255.])
-	#yt.plot(quantile=.9)
-	#plt.gca().set_facecolor((.3,.3,.3))
-	#plt.show()
-
-	#clip_video(yt.video_path,yt.audio_path,gti,'output.mp4')
+	#clip_video(yt.video_path,yt.audio_path,yt.gti,'output_adjusted.mp4')
