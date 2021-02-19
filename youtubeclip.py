@@ -10,9 +10,25 @@ import re
 import pandas as pd
 from timestamps import split_timestamps, convert_timestamp
 import csv
-from movie_maker import clip_video, clip_video_python
+from movie_maker import clip_video
+from scipy.ndimage import generic_filter as gf
 
 PATTERN = re.compile(r'\d{1,3}(?::\d{1,3}){1,2}(?:\s*-\s*\d{1,3}(?::\d{1,3}){1,2})?')
+
+def argmin_min_within_length(data, start, length):
+	if length>0:
+		length = min(len(data)-1-start,length)
+	full_val = np.max(data)+1
+	window = np.full_like(data,full_val)
+	#print('Start:',start,'s+l:',start+length)
+	if length>0:
+		window[start:start+length+1] = data[start:start+length+1]
+		print(window)
+	else:
+		window[start+length:start+1] = data[start+length:start+1]
+		print(window)
+	
+	return np.argmin(window), np.min(window)
 
 class YoutubeVideo():
 	def __init__(self, *args, **kwargs):
@@ -152,9 +168,7 @@ class YoutubeVideo():
 
 	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.9,
-								walkback=10,walkforward=5, val=None):
-		mean_dbs = np.mean(dbs)
-		std_dbs = np.std(dbs)
+								max_walkback=10, max_walkforward=5, val=None):
 		timestamps, timeintervals = self.timestamps_timeintervals()
 		timeintervals = self.remove_long_timeintervals(timeintervals,max_len)
 		hist = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
@@ -247,12 +261,19 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP')
-	gti = yt.find_good_timeintervals(120)
+	data = [9, 4, 3, 5, 7, 1, 8, 4, 0, 2, 3, 5]
+	print('Data  :',data)
+	start = 1
+	length = len(data)
+	arg, val = argmin_min_within_length(data,start,length)
+	print(f'Min from {start} within {length} elements: data[{arg}] = {val}')
+
+	#yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP')
+	#gti = yt.find_good_timeintervals(120)
 	#print('Good Time Intervals:', gti)
 	#yt.set_plot_color([66/255.,135/255.,245/255.])
 	#yt.plot(quantile=.9)
 	#plt.gca().set_facecolor((.3,.3,.3))
 	#plt.show()
 
-	clip_video(yt.video_path,yt.audio_path,gti,'output.mp4')
+	#clip_video(yt.video_path,yt.audio_path,gti,'output.mp4')
