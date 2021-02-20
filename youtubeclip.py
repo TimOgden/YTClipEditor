@@ -12,7 +12,7 @@ from timestamps import split_timestamps, convert_timestamp
 import csv
 from movie_maker import clip_video
 from scipy.ndimage import generic_filter as gf
-
+from scipy.signal import find_peaks
 PATTERN = re.compile(r'\d{1,3}(?::\d{1,3}){1,2}(?:\s*-\s*\d{1,3}(?::\d{1,3}){1,2})?')
 
 def argmin_min_within_length(data, start, length):
@@ -54,7 +54,8 @@ class YoutubeVideo():
 			self.audio_delta_t = .5
 		print('Getting data now')
 		yt = YouTube(self.url)
-		self.title = self.clean_title(yt.title)
+		self.original_title = yt.title
+		self.title = self.clean_title(self.original_title)
 		self.comments_path = self.download_comments()
 		self.video_path = self.download_video(yt)
 		self.audio_path = self.download_audio(yt)
@@ -142,7 +143,7 @@ class YoutubeVideo():
 		timestamps = self.get_timestamps()
 		return [t for t in timestamps if type(t)!=list], [t for t in timestamps if type(t)==list]
 
-	def remove_long_timeintervals(self, ts, max_len):
+	def remove_illegal_timeintervals(self, ts, max_len):
 		ts_new = []
 		for t in ts:
 			if t[1] - t[0] <= max_len and t[0]>=0 and t[1]<self.length:
@@ -158,7 +159,7 @@ class YoutubeVideo():
 		plt.plot(time,dbs,c='w',linewidth=.5,alpha=.5)
 		plt.hlines(np.mean(dbs),0,time[-1],color='k')
 		timestamps, timeintervals = self.timestamps_timeintervals()
-		timeintervals = self.remove_long_timeintervals(timeintervals,60)
+		timeintervals = self.remove_illegal_timeintervals(timeintervals,60)
 		hist = np.histogram([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t))
 		hist, bins = hist[0], hist[1]
 		#print('Hist:',hist)
@@ -181,15 +182,19 @@ class YoutubeVideo():
 
 	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.9,
-								max_walkback=5, max_walkforward=3, val=None):
+								max_walkback=10, max_walkforward=5, val=None):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
 		timeintervals = self.remove_long_timeintervals(timeintervals,max_len)
-		hist = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
-		hist, bins = hist[0], hist[1]
-		#print('Histogram:', hist)
-		#print('Convolution:', np.convolve(hist,np.ones(3,dtype=int),'valid'))
-
+		hist, bins = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
+		hist = hist.astype(np.float16)/self.views
+		print('Histogram:', hist)
+		[print('Convolution of kernel size {}:'.format(2**i), np.convolve(hist,np.ones(2**i,dtype=int),'same')) for i in range(4)]
+		fig, axs = plt.subplots(4,1, sharey=True)
+		for i,ax in enumerate(axs):
+			ax.plot(np.convolve(hist,np.ones(2**i,dtype=int),'same'))
+			ax.set_ylabel('Kernel size of {}'.format(2**i))
+		plt.show()
 		if not val:
 			val = np.quantile(hist, user_gen_quantile)
 
@@ -203,10 +208,10 @@ class YoutubeVideo():
 				original_start, original_end = ti[0], ti[1]
 				start, _ = argmin_min_within_length(dbs,original_start*4,round(-max_walkback*self.audio_delta_t**-1))
 				end, _ = argmin_min_within_length(dbs,original_end*4,round(max_walkforward*self.audio_delta_t**-1))
-				start/=4
-				end/=4
+				start/=round(self.audio_delta_t**-1)
+				end/=round(self.audio_delta_t**-1)
 				adjusted_tis.append([start,end])
-				print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
+				#print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
 			if len(adjusted_tis)>0:
 				user_gen.append([np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])])
 		#print(good_bins)
@@ -283,7 +288,7 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=KC0DlJza3dk', audio_delta_t=.25)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP', audio_delta_t=.25)
 	yt.gti = yt.find_good_timeintervals(60, user_gen_quantile=.9)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
@@ -291,4 +296,4 @@ if __name__ == '__main__':
 	plt.gca().set_facecolor((.3,.3,.3))
 	plt.show()
 
-	#clip_video(yt.video_path,yt.audio_path,yt.gti,'output_adjusted.mp4')
+	#clip_video(yt.video_path,yt.audio_path,yt.gti,'output_adjusted.mp4',overlay_text=yt.original_title)
