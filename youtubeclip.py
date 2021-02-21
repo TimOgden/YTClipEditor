@@ -13,7 +13,9 @@ import csv
 from movie_maker import clip_video
 from scipy.ndimage import generic_filter as gf
 from scipy.signal import find_peaks
+
 PATTERN = re.compile(r'\d{1,3}(?::\d{1,3}){1,2}(?:\s*-\s*\d{1,3}(?::\d{1,3}){1,2})?')
+TIMESTAMP_MULTIPLIER = 2
 
 def argmin_min_within_length(data, start, length):
 	if length>0:
@@ -122,6 +124,7 @@ class YoutubeVideo():
 
 	def set_delta_t(self,delta_t):
 		self.delta_t = delta_t
+
 	def set_audio_delta_t(self, audio_delta_t):
 		self.audio_delta_t = audio_delta_t
 
@@ -136,12 +139,14 @@ class YoutubeVideo():
 					[timestamps.append(ts) for ts in split_timestamps(re.findall(PATTERN, comment))]
 				except Exception as e:
 					pass
-		#print(len(timestamps))
 		return timestamps
 
 	def timestamps_timeintervals(self):
 		timestamps = self.get_timestamps()
-		return [t for t in timestamps if type(t)!=list], [t for t in timestamps if type(t)==list]
+		timestamps, timeintervals = [t for t in timestamps if type(t)!=list], [t for t in timestamps if type(t)==list]
+		for ti in timeintervals:
+			[[timestamps.append(t) for _ in range(TIMESTAMP_MULTIPLIER)] for t in range(ti[0],ti[1]+10,10)]
+		return timestamps, timeintervals
 
 	def remove_illegal_timeintervals(self, ts, max_len):
 		ts_new = []
@@ -181,18 +186,20 @@ class YoutubeVideo():
 
 
 	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
-								algorithmic_gen_quantile=.9,
+								algorithmic_gen_quantile=.7,
 								max_walkback=10, max_walkforward=5, val=None):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
-		timeintervals = self.remove_long_timeintervals(timeintervals,max_len)
+		timeintervals = self.remove_illegal_timeintervals(timeintervals,max_len)
 		hist, bins = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
 		hist = hist.astype(np.float16)/self.views
-		print('Histogram:', hist)
-		[print('Convolution of kernel size {}:'.format(2**i), np.convolve(hist,np.ones(2**i,dtype=int),'same')) for i in range(4)]
 		fig, axs = plt.subplots(4,1, sharey=True)
 		for i,ax in enumerate(axs):
-			ax.plot(np.convolve(hist,np.ones(2**i,dtype=int),'same'))
+			convolution = np.convolve(hist,np.ones(2**i,dtype=int),'same')
+			ax.plot(convolution)
+			indices = find_peaks(convolution,height=np.quantile(convolution,algorithmic_gen_quantile))[0]
+			print('Indices of peaks:',indices)
+			ax.plot(indices,convolution[indices],'x')
 			ax.set_ylabel('Kernel size of {}'.format(2**i))
 		plt.show()
 		if not val:
@@ -206,10 +213,11 @@ class YoutubeVideo():
 			adjusted_tis = []
 			for ti in ti_start_in_bin:
 				original_start, original_end = ti[0], ti[1]
-				start, _ = argmin_min_within_length(dbs,original_start*4,round(-max_walkback*self.audio_delta_t**-1))
-				end, _ = argmin_min_within_length(dbs,original_end*4,round(max_walkforward*self.audio_delta_t**-1))
-				start/=round(self.audio_delta_t**-1)
-				end/=round(self.audio_delta_t**-1)
+				delta_t_reciprocal = round(self.audio_delta_t**-1)
+				start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
+				end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
+				start/=delta_t_reciprocal
+				end/=delta_t_reciprocal
 				adjusted_tis.append([start,end])
 				#print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
 			if len(adjusted_tis)>0:
@@ -288,7 +296,7 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP', audio_delta_t=.25)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=muBkYQg-hSg', audio_delta_t=.25)
 	yt.gti = yt.find_good_timeintervals(60, user_gen_quantile=.9)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])

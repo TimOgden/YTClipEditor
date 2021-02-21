@@ -2,7 +2,6 @@ from pytube import Playlist
 from youtubeclip import YoutubeVideo
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn_fitting import fit_transform
 import numpy as np
 
 class YoutubePlaylist():
@@ -30,7 +29,7 @@ class YoutubePlaylist():
 		plt.show()
 
 	def quantile(self, decimal):
-		ts, _ = np.concat((video.timestamps_timeintervals() for video in self.videos),axis=0)
+		ts = np.concatenate([video.timestamps_timeintervals()[0] for video in self.videos],axis=0)
 		quantile = np.quantile(ts, decimal)
 		return quantile
 
@@ -43,5 +42,6 @@ if __name__ == '__main__':
 			  [117/255.,245/255.,66/255.],
 			  [245/255.,188/255.,66/255.],
 			  [245/255.,84/255.,66/255.]]
-	playlist.plot_videos(colors)
+	#playlist.plot_videos(colors)
 	#playlist.plot_views()
+	print(playlist.quantile(.6))
