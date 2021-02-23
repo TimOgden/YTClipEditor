@@ -10,7 +10,7 @@ import re
 import pandas as pd
 from timestamps import split_timestamps, convert_timestamp
 import csv
-from movie_maker import clip_video
+from movie_maker import clip_video, create_video_clips
 from scipy.ndimage import generic_filter as gf
 from scipy.signal import find_peaks
 
@@ -54,6 +54,10 @@ class YoutubeVideo():
 			self.audio_delta_t = kwargs['audio_delta_t']
 		else:
 			self.audio_delta_t = .5
+		if 'max_len' in kwargs:
+			self.max_len = kwargs['max_len']
+		else:
+			self.max_len = 60
 		print('Getting data now')
 		yt = YouTube(self.url)
 		self.original_title = yt.title
@@ -132,7 +136,9 @@ class YoutubeVideo():
 		timestamps = []
 		with open(self.comments_path,'r', encoding='utf-8') as f:
 			reader = csv.reader(f)
-			#print('Num of comments:',sum(1 for row in reader))
+			self.num_comments = sum(1 for row in reader)
+		with open(self.comments_path,'r', encoding='utf-8') as f:
+			reader = csv.reader(f)
 			for row in reader:
 				try:
 					comment = ''.join(row)
@@ -155,53 +161,65 @@ class YoutubeVideo():
 				ts_new.append(t)
 		return ts_new
 
-	def plot(self, offset=0, quantile=None):
+	def create_histogram(self, plot_graph=False, normalize=False, *args, **kwargs):
+		timestamps, timeintervals = self.timestamps_timeintervals()
+		timeintervals = self.remove_illegal_timeintervals(timeintervals, self.max_len)
+		hist, bins = np.histogram(timestamps, bins=np.arange(0,self.length,self.delta_t))
+		if normalize:
+			hist = hist.astype(np.float32)/self.num_comments
+		if plot_graph:
+			self.plot(timestamps, timeintervals, *args, **kwargs)
+			plt.gca().set_facecolor((.3,.3,.3))
+		return hist, bins
+
+	def plot(self, timestamps, timeintervals, *args, **kwargs):
 		dbs = self.dbs
+		offset = kwargs.get('offset',0)
+		quantile = kwargs.get('quantile',None)
 		time = np.linspace(offset,self.length+offset,self.num_chunks)
+
 		max_dbs = np.amax(dbs) # min-max normalization
 		min_dbs = np.amin(dbs)
 		dbs = (dbs - min_dbs)*20 / (max_dbs - min_dbs)
+
 		plt.plot(time,dbs,c='w',linewidth=.5,alpha=.5)
-		plt.hlines(np.mean(dbs),0,time[-1],color='k')
-		timestamps, timeintervals = self.timestamps_timeintervals()
-		timeintervals = self.remove_illegal_timeintervals(timeintervals,60)
-		hist = np.histogram([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t))
-		hist, bins = hist[0], hist[1]
-		#print('Hist:',hist)
-		#print('Bins:',bins)
-		#if quantile:
-			#val = np.quantile(hist, quantile)
-			#print(bins[:-1][hist>=val])
+		#plt.hlines(np.mean(dbs),0,time[-1],color='k')
+		#plt.bar(bins[:-1], hist, color=self.plot_color)
 		plt.hist([(t+offset) for t in timestamps],bins=np.arange(offset,self.length+offset,self.delta_t),color=self.plot_color)
+
 		for i,interval in enumerate(timeintervals):
 			plt.plot([(val+offset) for val in interval],[i+1]*len(interval),marker='o',c=self.plot_color,
 				markersize=2,markeredgecolor='k',alpha=.8,label='User time intervals')
+
 		if self.gti:
 			for i,interval in enumerate(self.gti):
 				plt.plot([(val+offset) for val in interval],[i+1.2]*len(interval),marker='o',c='r',
 					markersize=2,markeredgecolor='k',alpha=.8,label='Final time intervals')
+
 		handles, labels = plt.gca().get_legend_handles_labels()
 		by_label = dict(zip(labels, handles))
 		plt.legend(by_label.values(), by_label.keys(),loc='upper right')
 
 
-	def find_good_timeintervals(self, max_len, user_gen_quantile=.8,
+	def find_good_timeintervals(self, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.7,
-								max_walkback=10, max_walkforward=5, val=None):
+								max_walkback=10, max_walkforward=5, val=None, plot_kernels=False):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
-		timeintervals = self.remove_illegal_timeintervals(timeintervals,max_len)
+		timeintervals = self.remove_illegal_timeintervals(timeintervals, self.max_len)
 		hist, bins = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
 		hist = hist.astype(np.float16)/self.views
-		fig, axs = plt.subplots(4,1, sharey=True)
-		for i,ax in enumerate(axs):
-			convolution = np.convolve(hist,np.ones(2**i,dtype=int),'same')
-			ax.plot(convolution)
-			indices = find_peaks(convolution,height=np.quantile(convolution,algorithmic_gen_quantile))[0]
-			print('Indices of peaks:',indices)
-			ax.plot(indices,convolution[indices],'x')
-			ax.set_ylabel('Kernel size of {}'.format(2**i))
-		plt.show()
+		
+		if plot_kernels:
+			fig, axs = plt.subplots(4,1, sharey=True)
+			for i,ax in enumerate(axs):
+				convolution = np.convolve(hist,np.ones(2**i,dtype=int),'same')
+				ax.plot(convolution)
+				indices = find_peaks(convolution,height=np.quantile(convolution,algorithmic_gen_quantile))[0]
+				print('Indices of peaks:',indices)
+				ax.plot(indices,convolution[indices],'x')
+				ax.set_ylabel('Kernel size of {}'.format(2**i))
+			plt.show()
 		if not val:
 			val = np.quantile(hist, user_gen_quantile)
 
@@ -221,7 +239,9 @@ class YoutubeVideo():
 				adjusted_tis.append([start,end])
 				#print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
 			if len(adjusted_tis)>0:
-				user_gen.append([np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])])
+				minimum, maximum = np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])
+				if maximum-minimum<=self.max_len:
+					user_gen.append([np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])])
 		#print(good_bins)
 		val = np.quantile(hist, algorithmic_gen_quantile)
 		good_bins = bins[:-1][hist>=val]
@@ -296,12 +316,10 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=muBkYQg-hSg', audio_delta_t=.25)
-	yt.gti = yt.find_good_timeintervals(60, user_gen_quantile=.9)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP', audio_delta_t=.25)
+	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
-	yt.plot(quantile=.9)
-	plt.gca().set_facecolor((.3,.3,.3))
+	yt.create_histogram(plot_graph=True)
 	plt.show()
-
-	#clip_video(yt.video_path,yt.audio_path,yt.gti,'output_adjusted.mp4',overlay_text=yt.original_title)
+	create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./clips/01.mp4',overlay_text=yt.original_title)
