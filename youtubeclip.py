@@ -10,7 +10,7 @@ import re
 import pandas as pd
 from timestamps import split_timestamps, convert_timestamp
 import csv
-from movie_maker import clip_video, create_video_clips
+from movie_maker import create_video_clips
 from scipy.ndimage import generic_filter as gf
 from scipy.signal import find_peaks
 
@@ -30,6 +30,13 @@ def argmin_min_within_length(data, start, length):
 		window = np.flip(window)
 		return len(window)-1-np.argmin(window), np.min(window)
 	return np.argmin(window), np.min(window)
+def argmin_min_within_range(data,start,end):
+	if start<end:
+		tmp = end
+		end = start
+		start = tmp
+	data = data[start:end]
+	return np.argmin(data), np.min(data)
 
 class YoutubeVideo():
 	def __init__(self, *args, **kwargs):
@@ -203,7 +210,7 @@ class YoutubeVideo():
 
 	def find_good_timeintervals(self, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.7,
-								max_walkback=10, max_walkforward=5, val=None, plot_kernels=False):
+								max_walkback=15, max_walkforward=10, val=None, plot_kernels=False):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
 		timeintervals = self.remove_illegal_timeintervals(timeintervals, self.max_len)
@@ -212,14 +219,27 @@ class YoutubeVideo():
 		
 		if plot_kernels:
 			fig, axs = plt.subplots(4,1, sharey=True)
+			plt.title('Timestamp Histogram with Convolution Sum')
 			for i,ax in enumerate(axs):
 				convolution = np.convolve(hist,np.ones(2**i,dtype=int),'same')
 				ax.plot(convolution)
 				indices = find_peaks(convolution,height=np.quantile(convolution,algorithmic_gen_quantile))[0]
-				print('Indices of peaks:',indices)
 				ax.plot(indices,convolution[indices],'x')
-				ax.set_ylabel('Kernel size of {}'.format(2**i))
+				ax.set_ylabel('kernel_size={}'.format(2**i),rotation=0)
+			
 			plt.show()
+			fig, axs = plt.subplots(4,1,sharey=True)
+			plt.title('Volume with Convolution Sum')
+			for i,ax in enumerate(axs):
+				convolution = np.convolve(dbs[:60*4],np.ones(2**i,dtype=int),'same')
+				convolution = (convolution - np.mean(convolution)) / np.std(convolution)
+				ax.plot(convolution)
+				indices = find_peaks(convolution)[0]
+				#ax.plot(indices,convolution[indices],'x')
+				ax.set_ylabel('kernel_size={} ({}sec)'.format(2**i,(2**i)/4),rotation=0)
+			
+			plt.show()
+
 		if not val:
 			val = np.quantile(hist, user_gen_quantile)
 
@@ -317,9 +337,10 @@ class YoutubeVideo():
 
 if __name__ == '__main__':
 	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP', audio_delta_t=.25)
-	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9)
+	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=True)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
 	yt.create_histogram(plot_graph=True)
 	plt.show()
-	create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./clips/01.mp4',overlay_text=yt.original_title)
+
+	#create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./clips/single_clip.mp4', overlay_text=yt.original_title)

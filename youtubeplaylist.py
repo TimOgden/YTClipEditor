@@ -4,7 +4,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
-from movie_maker import create_video_clips
+from movie_maker import create_video_clips, combine_highlight_reels
+import time
 
 class YoutubePlaylist():
 	def __init__(self, url):
@@ -48,9 +49,14 @@ if __name__ == '__main__':
 	q = playlist.quantile(.9)
 	print(q)
 	playlist.plot_videos(colors, quantile=q)
-	#plt.show()
+	plt.show()
 	playlist.plot_views()
-	#plt.show()
+	#combine_highlight_reels(playlist, 'markiplier_among_us.mp4')
+	plt.show()
+	start_time = time.time()
 	for i,video in enumerate(playlist.videos):
-		create_video_clips(video.video_path,video.audio_path,video.gti,'./clips/{}.mp4'.format(i))
-	
+		create_video_clips(video.video_path,video.audio_path,video.gti,'./clips/{}.mp4'.format(i),overlay_text=video.original_title)
+	print(f'Creating {len(playlist.videos)} episode reels took {time.time()-start_time:.3f} seconds.')
+	start_time = time.time()
+	combine_highlight_reels('concatenated_output.mp4')
+	print(f'Merging {len(playlist.videos)} episodes took {time.time()-start_time:.3f} seconds.')
