@@ -209,7 +209,7 @@ class YoutubeVideo():
 
 
 	def find_good_timeintervals(self, user_gen_quantile=.8,
-								algorithmic_gen_quantile=.7,
+								algorithmic_gen_quantile=.8,
 								max_walkback=15, max_walkforward=10, val=None, plot_kernels=False):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
@@ -223,7 +223,9 @@ class YoutubeVideo():
 			for i,ax in enumerate(axs):
 				convolution = np.convolve(hist,np.ones(2**i,dtype=int),'same')
 				ax.plot(convolution)
-				indices = find_peaks(convolution,height=np.quantile(convolution,algorithmic_gen_quantile))[0]
+				height = np.quantile(convolution, algorithmic_gen_quantile)
+				ax.plot(np.arange(len(convolution)),[height]*len(convolution),color='green')
+				indices = find_peaks(convolution,height=height)[0]
 				ax.plot(indices,convolution[indices],'x')
 				ax.set_ylabel('kernel_size={}'.format(2**i),rotation=0)
 			
@@ -245,6 +247,10 @@ class YoutubeVideo():
 
 		good_bins = bins[:-1][hist>=val]
 		user_gen = []
+		#for good_bin in good_bins:
+		#	for ti in timeintervals:
+		#		if good_bin>=ti[0] and good_bin<ti[1]:
+
 		for good_bin in good_bins:
 			#print('{} is a good bin above the {:.2%} percentile'.format(good_bin,user_gen_quantile))
 			ti_start_in_bin = self.fitting_timeintervals(timeintervals,start_range=(good_bin,good_bin+9.999))
@@ -336,7 +342,7 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=HjShcaf9jOY&list=PLRQGRBgN_Enod4X3kbPgQ9NePHr7SUJfP', audio_delta_t=.25)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=muBkYQg-hSg', audio_delta_t=.25)
 	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=True)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
