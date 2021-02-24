@@ -8,7 +8,7 @@ import json
 import googleapiclient.discovery
 import re
 import pandas as pd
-from timestamps import split_timestamps, convert_timestamp
+from timestamps import split_timestamps, convert_timestamp, overlap
 import csv
 from movie_maker import create_video_clips
 from scipy.ndimage import generic_filter as gf
@@ -37,6 +37,8 @@ def argmin_min_within_range(data,start,end):
 		start = tmp
 	data = data[start:end]
 	return np.argmin(data), np.min(data)
+
+
 
 class YoutubeVideo():
 	def __init__(self, *args, **kwargs):
@@ -179,7 +181,28 @@ class YoutubeVideo():
 			plt.gca().set_facecolor((.3,.3,.3))
 		return hist, bins
 
-	def plot(self, timestamps, timeintervals, *args, **kwargs):
+	def group_kernel_indices(self,data,patience):
+		groups = []
+		diff = np.diff(data)
+		t0 = None
+		t1 = None
+		#print('Diff:',diff)
+		for i,d in enumerate(diff[~np.isnan(diff)]):
+			if d<=patience*self.delta_t:
+				if not t0:
+					t0 = i
+				t1 = i
+			else: # d>patience so end timeinterval
+				if t0:
+					#print(f'Element {i} in diff = {d}, so t0 has been set to {t0} and t1 now set to {t1}.')
+					groups.append([t0,t1])
+					t0 = None
+					t1 = None
+		if t0 and t1 and t0!=t1:
+			groups.append([t0,t1])
+		return groups
+
+	def plot(self, timestamps, timeintervals, plot_kernel=True, *args, **kwargs):
 		dbs = self.dbs
 		offset = kwargs.get('offset',0)
 		quantile = kwargs.get('quantile',None)
@@ -202,7 +225,14 @@ class YoutubeVideo():
 			for i,interval in enumerate(self.gti):
 				plt.plot([(val+offset) for val in interval],[i+1.2]*len(interval),marker='o',c='r',
 					markersize=2,markeredgecolor='k',alpha=.8,label='Final time intervals')
-
+		if plot_kernel:
+			hist, bins = np.histogram([t for t in timestamps],bins=np.arange(0,self.length,self.delta_t))
+			convolution = np.convolve(hist,np.ones(8,dtype=int),'same')
+			height = np.quantile(convolution, .8)
+			#indices = find_peaks(convolution, height=height, distance=4)[0]
+			indices = np.where(convolution>=height)[0]
+			plt.plot(np.arange(0,len(hist)*self.delta_t,self.delta_t),convolution)
+			plt.plot(np.multiply(indices,self.delta_t),convolution[indices],'x')
 		handles, labels = plt.gca().get_legend_handles_labels()
 		by_label = dict(zip(labels, handles))
 		plt.legend(by_label.values(), by_label.keys(),loc='upper right')
@@ -225,7 +255,7 @@ class YoutubeVideo():
 				ax.plot(convolution)
 				height = np.quantile(convolution, algorithmic_gen_quantile)
 				ax.plot(np.arange(len(convolution)),[height]*len(convolution),color='green')
-				indices = find_peaks(convolution,height=height)[0]
+				indices = find_peaks(convolution,height=height, distance=4)[0]
 				ax.plot(indices,convolution[indices],'x')
 				ax.set_ylabel('kernel_size={}'.format(2**i),rotation=0)
 			
@@ -247,34 +277,73 @@ class YoutubeVideo():
 
 		good_bins = bins[:-1][hist>=val]
 		user_gen = []
-		#for good_bin in good_bins:
-		#	for ti in timeintervals:
-		#		if good_bin>=ti[0] and good_bin<ti[1]:
-
 		for good_bin in good_bins:
-			#print('{} is a good bin above the {:.2%} percentile'.format(good_bin,user_gen_quantile))
-			ti_start_in_bin = self.fitting_timeintervals(timeintervals,start_range=(good_bin,good_bin+9.999))
 			adjusted_tis = []
-			for ti in ti_start_in_bin:
-				original_start, original_end = ti[0], ti[1]
-				delta_t_reciprocal = round(self.audio_delta_t**-1)
-				start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
-				end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
-				start/=delta_t_reciprocal
-				end/=delta_t_reciprocal
-				adjusted_tis.append([start,end])
-				#print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
+			for ti in timeintervals:
+				if good_bin>=ti[0] and good_bin<ti[1]:
+					original_start, original_end = ti[0], ti[1]
+					delta_t_reciprocal = round(self.audio_delta_t**-1)
+					start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
+					end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
+					start/=delta_t_reciprocal
+					end/=delta_t_reciprocal
+					adjusted_tis.append([start,end])
+					#print(f'[{ti[0]},{ti[1]}] -> [{start},{end}]')
 			if len(adjusted_tis)>0:
 				minimum, maximum = np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])
 				if maximum-minimum<=self.max_len:
 					user_gen.append([np.min([t[0] for t in adjusted_tis]), np.max([t[1] for t in adjusted_tis])])
 		#print(good_bins)
-		val = np.quantile(hist, algorithmic_gen_quantile)
-		good_bins = bins[:-1][hist>=val]
+		convolution = np.convolve(hist,np.ones(8,dtype=int),'same')
+		height = np.quantile(convolution, algorithmic_gen_quantile)
+		indices = np.where(convolution>=height)[0]
+		good_bins = bins[indices]
+		#print('Good bins:',good_bins)
+		group_start_end_indices = self.group_kernel_indices(good_bins,2)
+		#print('Group start and end indices:', group_start_end_indices)
 		algo_gen = []
-		for good_bin in good_bins:
-			pass
-		return user_gen
+		for group in group_start_end_indices:
+			ti = [good_bins[group[0]],good_bins[group[1]]+10]
+			#print('Group start and end times:', ti)
+			original_start, original_end = ti[0], ti[1]
+			delta_t_reciprocal = round(self.audio_delta_t**-1)
+			start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
+			end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
+			start/=delta_t_reciprocal
+			end/=delta_t_reciprocal
+			algo_gen.append([start,end])
+		#print('Algorithmicaly generated:',algo_gen)
+		final = self.fix_discrepancies(user_gen,algo_gen)
+		return final
+
+	def fix_discrepancies(self, user_gen, algo_gen):
+		gen_methods = {}
+		for u in user_gen:
+			gen_methods[tuple(u)] = True
+		for a in algo_gen:
+			gen_methods[tuple(a)] = False
+		concat = user_gen + algo_gen
+		ans = []
+		for bin_ in range(0,self.length,self.delta_t):
+			ti = self.timeintervals_intersect_bin(bin_,concat)
+			result = None
+			if len(ti)==1:
+				result = ti[0]
+			elif len(ti)>1: # multiple ti intersect this bin
+				result = None
+				for t in ti:
+					if gen_methods[tuple(t)]: # if is user gen
+						result = t
+						break
+				if not result:
+					result = ti[0]
+			if result:
+				ti.remove(result)
+				ans += ti
+		return [x for x in concat if x not in ans]
+	
+	def timeintervals_intersect_bin(self, bin_, timeintervals):
+		return [t for t in timeintervals if t[0]<=bin_ and t[1]>bin_]
 
 
 	def fitting_timeintervals(self,ti,start_range=None,end_range=None):
@@ -343,10 +412,9 @@ class YoutubeVideo():
 
 if __name__ == '__main__':
 	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=muBkYQg-hSg', audio_delta_t=.25)
-	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=True)
+	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=False)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
 	yt.create_histogram(plot_graph=True)
 	plt.show()
-
 	#create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./clips/single_clip.mp4', overlay_text=yt.original_title)
