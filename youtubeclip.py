@@ -8,7 +8,7 @@ import json
 import googleapiclient.discovery
 import re
 import pandas as pd
-from timestamps import split_timestamps, convert_timestamp, overlap
+from timestamps import split_timestamps, convert_timestamp, overlap, merge
 import csv
 from movie_maker import create_video_clips
 from scipy.ndimage import generic_filter as gf
@@ -30,6 +30,7 @@ def argmin_min_within_length(data, start, length):
 		window = np.flip(window)
 		return len(window)-1-np.argmin(window), np.min(window)
 	return np.argmin(window), np.min(window)
+
 def argmin_min_within_range(data,start,end):
 	if start<end:
 		tmp = end
@@ -39,34 +40,25 @@ def argmin_min_within_range(data,start,end):
 	return np.argmin(data), np.min(data)
 
 
-
 class YoutubeVideo():
 	def __init__(self, *args, **kwargs):
-		if 'url' in kwargs:
-			self.url = kwargs['url']
-			self.id_ = self.url[kwargs['url'].index('.com/watch?v=')+len('.com/watch?v='):]
-			self.id_ = self.id_.split('&')[0]
-		elif 'id' in kwargs:
-			self.url = 'https://youtube.com/watch?v=' + kwargs['id']
-			self.id_ = kwargs['id']
+
+		self.url = kwargs.get('url',None)
+		if self.url:
+			self.id_ = self.url[self.url.index('.com/watch?v=')+len('.com/watch?v='):]
 		else:
+			self.id_ = kwargs.get('id_',None)
+			self.url = 'https://www.youtube.com/watch?v=' + self.id_
+		if not self.url:
 			raise ValueError('Please provide a url or id to your video.')
-		if 'plot_color' in kwargs:
-			self.plot_color = kwargs['plot_color']
-		else:
-			self.plot_color = [66/255.,78/255.,245/255.]
-		if 'delta_t' in kwargs:
-			self.delta_t = kwargs['delta_t']
-		else:
-			self.delta_t = 10
-		if 'audio_delta_t' in kwargs:
-			self.audio_delta_t = kwargs['audio_delta_t']
-		else:
-			self.audio_delta_t = .5
-		if 'max_len' in kwargs:
-			self.max_len = kwargs['max_len']
-		else:
-			self.max_len = 60
+
+		self.plot_color = kwargs.get('plot_color', [66/255.,78/255.,245/255.])
+		self.delta_t = kwargs.get('delta_t',10)
+		self.audio_delta_t = kwargs.get('audio_delta_t',.5)
+		self.max_len = kwargs.get('max_len',60)
+
+		self.playlist_folder = kwargs.get('playlist_folder','separateVideos')
+
 		print('Getting data now')
 		yt = YouTube(self.url)
 		self.original_title = yt.title
@@ -78,7 +70,7 @@ class YoutubeVideo():
 		self.dbs = self.get_dbs()
 		self.length = yt.length
 		self.views = yt.views
-		self.gti = None
+		self.gti = self.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=False, fix_discrepancies=True)
 
 		
 
@@ -96,33 +88,33 @@ class YoutubeVideo():
 		self.views = yt.views
 		video = yt.streams.filter(progressive=False,file_extension='mp4').order_by('resolution').desc().first()
 		self.title = self.clean_title(yt.title)
-		self.vid_filepath = os.path.join('YTVideos',self.title+'.mp4')
-		if not os.path.exists(self.vid_filepath):
+		vid_filepath = os.path.join(f'./playlists/{self.playlist_folder}/videos/',self.title+'.mp4')
+		if not os.path.exists(vid_filepath):
 			print('Downloading video of {} with format {}'.format(self.title, video))
-			video.download('./YTVideos')
+			video.download(f'./playlists/{self.playlist_folder}/videos')
 		else:
 			print('Video of {} already downloaded.'.format(self.title))
-		return self.vid_filepath
+		return vid_filepath
 
 	def download_audio(self, yt):
 		audio = yt.streams.filter(only_audio=True).first()
 		self.title = self.clean_title(yt.title)
-		self.aud_filepath = os.path.join('YTAudio',self.title+'.mp4')
-		if not os.path.exists(self.aud_filepath):
+		aud_filepath = os.path.join(f'./playlists/{self.playlist_folder}/audio/',self.title+'.mp4')
+		if not os.path.exists(aud_filepath):
 			print('Downloading audio of {} with format {}'.format(self.title, audio.mime_type))
-			audio.download('./YTAudio')
+			audio.download(f'./playlists/{self.playlist_folder}/audio')
 		else:
 			print('Audio of {} already downloaded.'.format(self.title))
-		return self.aud_filepath
+		return aud_filepath
 
 	def extract_wav(self):
-		if not os.path.exists(os.path.join('wavs',self.title+'.wav')):
-			command = 'ffmpeg -hide_banner -loglevel error -i "./{}" -ab 160k -ac 2 -ar 44100 -vn "./wavs/{}.wav"'.format(self.audio_path, self.title)
+		if not os.path.exists(os.path.join(f'./playlists/{self.playlist_folder}/wavs/',self.title+'.wav')):
+			command = 'ffmpeg -hide_banner -loglevel error -i "./{}" -ab 160k -ac 2 -ar 44100 -vn "./playlists/{}/wavs/{}.wav"'.format(self.audio_path, self.playlist_folder, self.title)
 			subprocess.call(command, shell=True)
 			print('Created WAV file.')
 		else:
 			print('WAV File already exists.')
-		return os.path.join('wavs',self.title+'.wav')
+		return os.path.join(f'./playlists/{self.playlist_folder}/wavs/',self.title+'.wav')
 
 	def get_dbs(self):
 		samplerate, data = wavfile.read(self.wav_path)
@@ -231,8 +223,9 @@ class YoutubeVideo():
 			height = np.quantile(convolution, .8)
 			#indices = find_peaks(convolution, height=height, distance=4)[0]
 			indices = np.where(convolution>=height)[0]
-			plt.plot(np.arange(0,len(hist)*self.delta_t,self.delta_t),convolution)
-			plt.plot(np.multiply(indices,self.delta_t),convolution[indices],'x')
+			plt.hlines(height,offset,self.length+offset,alpha=.5,color='k')
+			plt.plot(np.arange(offset,len(hist)*self.delta_t+offset,self.delta_t),convolution,color=self.plot_color)
+			plt.plot(np.multiply(indices,self.delta_t)+offset,convolution[indices],'x',color=self.plot_color)
 		handles, labels = plt.gca().get_legend_handles_labels()
 		by_label = dict(zip(labels, handles))
 		plt.legend(by_label.values(), by_label.keys(),loc='upper right')
@@ -240,7 +233,9 @@ class YoutubeVideo():
 
 	def find_good_timeintervals(self, user_gen_quantile=.8,
 								algorithmic_gen_quantile=.8,
-								max_walkback=15, max_walkforward=10, val=None, plot_kernels=False):
+								max_walkback=15, max_walkforward=10, 
+								min_walkback=1, min_walkforward=1,
+								val=None, plot_kernels=False, fix_discrepancies=True):
 		dbs = self.dbs
 		timestamps, timeintervals = self.timestamps_timeintervals()
 		timeintervals = self.remove_illegal_timeintervals(timeintervals, self.max_len)
@@ -283,8 +278,8 @@ class YoutubeVideo():
 				if good_bin>=ti[0] and good_bin<ti[1]:
 					original_start, original_end = ti[0], ti[1]
 					delta_t_reciprocal = round(self.audio_delta_t**-1)
-					start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
-					end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
+					start, _ = argmin_min_within_length(dbs,(original_start-min_walkback)*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
+					end, _ = argmin_min_within_length(dbs,(original_end+min_walkforward)*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
 					start/=delta_t_reciprocal
 					end/=delta_t_reciprocal
 					adjusted_tis.append([start,end])
@@ -307,40 +302,44 @@ class YoutubeVideo():
 			#print('Group start and end times:', ti)
 			original_start, original_end = ti[0], ti[1]
 			delta_t_reciprocal = round(self.audio_delta_t**-1)
-			start, _ = argmin_min_within_length(dbs,original_start*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
-			end, _ = argmin_min_within_length(dbs,original_end*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
+			start, _ = argmin_min_within_length(dbs,(original_start-min_walkback)*delta_t_reciprocal,delta_t_reciprocal*-max_walkback)
+			end, _ = argmin_min_within_length(dbs,(original_end+min_walkforward)*delta_t_reciprocal,delta_t_reciprocal*max_walkforward)
 			start/=delta_t_reciprocal
 			end/=delta_t_reciprocal
 			algo_gen.append([start,end])
 		#print('Algorithmicaly generated:',algo_gen)
-		final = self.fix_discrepancies(user_gen,algo_gen)
-		return final
+		if fix_discrepancies:
+			final = self.fix_discrepancies(user_gen,algo_gen)
+			return final
+		else:
+			return user_gen+algo_gen
 
 	def fix_discrepancies(self, user_gen, algo_gen):
 		gen_methods = {}
-		for u in user_gen:
-			gen_methods[tuple(u)] = True
-		for a in algo_gen:
-			gen_methods[tuple(a)] = False
+		for i, u in enumerate(user_gen):
+			gen_methods[tuple(u)] = [i,True]
+		for i, a in enumerate(algo_gen):
+			gen_methods[tuple(a)] = [i,False]
 		concat = user_gen + algo_gen
-		ans = []
 		for bin_ in range(0,self.length,self.delta_t):
 			ti = self.timeintervals_intersect_bin(bin_,concat)
+			ti = [[i,t] for i,t in enumerate(ti)]
 			result = None
 			if len(ti)==1:
 				result = ti[0]
 			elif len(ti)>1: # multiple ti intersect this bin
-				result = None
 				for t in ti:
-					if gen_methods[tuple(t)]: # if is user gen
+					if gen_methods[tuple(t[1])][1]: # if is user gen
 						result = t
 						break
 				if not result:
 					result = ti[0]
 			if result:
-				ti.remove(result)
-				ans += ti
-		return [x for x in concat if x not in ans]
+				for t in ti:
+					if t != result:
+						concat.remove(t[1])
+		#return [x for x in concat if x not in ans]
+		return concat
 	
 	def timeintervals_intersect_bin(self, bin_, timeintervals):
 		return [t for t in timeintervals if t[0]<=bin_ and t[1]>bin_]
@@ -361,7 +360,7 @@ class YoutubeVideo():
 					if t[1]>=end_range[0] and t[1]<=end_range[1]]
 
 	def download_comments(self, max_pages=100):
-		filename = os.path.join('comments',self.title+'.csv')
+		filename = os.path.join(f'./playlists/{self.playlist_folder}/comments/',self.title+'.csv')
 		if os.path.exists(filename):
 			print('Comments already downloaded.')
 			return filename
@@ -411,10 +410,9 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=muBkYQg-hSg', audio_delta_t=.25)
-	yt.gti = yt.find_good_timeintervals(user_gen_quantile=.9, plot_kernels=False)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=SFTxiJ3CyQY&list=PL9XS3v3WZxjbsFEj-1QBTcJdkBc8rL3X-', audio_delta_t=.25)
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
 	yt.create_histogram(plot_graph=True)
 	plt.show()
-	#create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./clips/single_clip.mp4', overlay_text=yt.original_title)
+	create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./playlists/Game Grumps - Kirby Dream Course/clips/0.mp4', overlay_text=yt.original_title)
