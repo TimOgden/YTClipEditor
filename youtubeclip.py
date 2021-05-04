@@ -384,7 +384,7 @@ class YoutubeVideo():
 		for c in response['items']:
 			comments.append(c['snippet']['topLevelComment']['snippet']['textOriginal'])
 		#print(comments)
-		nextToken = response['nextPageToken']
+		nextToken = response.get('nextPageToken', None)
 		i = 1
 		while nextToken and i<max_pages:
 			request = youtube.commentThreads().list(

@@ -63,17 +63,18 @@ if __name__ == '__main__':
 			  [245/255.,188/255.,66/255.],
 			  [245/255.,84/255.,66/255.]]
 	q = playlist.quantile(.9)
-	#playlist.plot_videos(colors, quantile=q)
-	#plt.show()
-	#playlist.plot_views()
-	#plt.show()
+	print([video.gti for video in playlist.videos])
+	playlist.plot_videos(colors, quantile=q)
+	plt.show()
+	playlist.plot_views()
+	plt.show()
 
 	start_time = time.time()
 	for i,video in enumerate(tqdm(playlist.videos)):
 		mm.create_video_clips(video.video_path,video.audio_path,video.gti,f'./playlists/{playlist_folder}/clips/{i}.mp4',overlay_text=video.original_title)
 	print(f'Creating {len(playlist.videos)} episode reels took {time.time()-start_time:.3f} seconds.')
 
-	mm.clean_folder(playlist,'clips')
+	#mm.clean_folder(playlist,'clips')
 
 	start_time = time.time()
 	mm.combine_highlight_reels(f'./playlists/{playlist_folder}/clips/',f'./playlists/{playlist_folder}/concatenated_output.mp4', delete_clips=True)

@@ -2,7 +2,7 @@ import subprocess
 import os
 import glob
 
-transition_video = 'transition.mp4'
+transition_video = 'transition_new.mp4'
 ending_video = 'ending.mp4'
 
 
