@@ -81,7 +81,7 @@ class YoutubeVideo():
 		.replace(':','').replace('"','').replace('/','') \
 		.replace('\\','').replace('|','').replace('?','') \
 		.replace('*','').replace('.','').replace(',','') \
-		.replace('~','').replace('\'','').replace('$','')
+		.replace('~','').replace('\'','').replace('$','').replace('#','')
 	
 	def download_video(self, yt):
 		self.length = yt.length
@@ -410,9 +410,9 @@ class YoutubeVideo():
 		return filename
 
 if __name__ == '__main__':
-	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=SFTxiJ3CyQY&list=PL9XS3v3WZxjbsFEj-1QBTcJdkBc8rL3X-', audio_delta_t=.25)
+	yt = YoutubeVideo(url='https://www.youtube.com/watch?v=C0RgtWkjCT4', audio_delta_t=.25, playlist_folder='Markiplier - People Playground')
 	print('Good Time Intervals:', yt.gti)
 	yt.set_plot_color([66/255.,135/255.,245/255.])
 	yt.create_histogram(plot_graph=True)
 	plt.show()
-	create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./playlists/Game Grumps - Kirby Dream Course/clips/0.mp4', overlay_text=yt.original_title)
+	create_video_clips(yt.video_path,yt.audio_path,yt.gti,'./playlists/Markiplier - People Playground/clips/0.mp4', overlay_text=yt.original_title)
