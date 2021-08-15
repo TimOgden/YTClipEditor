@@ -2,7 +2,7 @@ import subprocess
 import os
 import glob
 
-transition_video = 'transition_new.mp4'
+transition_video = 'transition.mp4'
 ending_video = 'ending.mp4'
 
 
@@ -58,7 +58,7 @@ def clean_folder(playlist, folder, retry=False):
 def combine_highlight_reels(clips_folder, output_file, delete_clips=False):
 	search = sorted(glob.glob(os.path.join(clips_folder,'*.mp4')), key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
 	command = f'ffmpeg -y -i {transition_video} ' + ' '.join([f'-i "{filename}"' for filename in search]) + ' -vsync 2 -filter_complex ' + \
-			'[0:v][0:a]'.join([f'[{i+1}:v][{i+1}:a]' for i in range(len(search))]) + f'concat=n={len(search)*2-1}:v=1:a=1[outv][outa] -map [outv] -map [outa] "{output_file}"'
+			'"[0:v][0:a]'.join([f'[{i+1}:v][{i+1}:a]' for i in range(len(search))]) + f'concat=n={len(search)*2-1}:v=1:a=1[outv][outa]" -map [outv] -map [outa] "{output_file}"'
 	print(command)
 	subprocess.call(command, shell=True)
 	if delete_clips:
